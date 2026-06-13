@@ -111,6 +111,14 @@
       "isProtected": false,
       "createdAt": "2026-03-28T00:00:00.000Z",
       "updatedAt": "2026-03-28T00:00:00.000Z"
+    },
+    {
+      "id": "theme-acp-dark",
+      "name": "WhatsACP Dark",
+      "description": "Premium Dark Mode - Navy Blue and Indigo styling designed for Akash Camera Production interface",
+      "isProtected": false,
+      "createdAt": "2026-06-13T11:24:00.000Z",
+      "updatedAt": "2026-06-13T11:24:00.000Z"
     }
   ]
 }
