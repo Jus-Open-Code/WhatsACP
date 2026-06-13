@@ -1,0 +1,9 @@
+@echo off
+echo Stopping all background servers (Backend and Dashboard)...
+taskkill /F /IM node.exe 2>nul
+echo Terminating zombie browser processes...
+powershell -Command "Get-CimInstance Win32_Process -Filter \"name = 'msedge.exe'\" | Where-Object { $_.CommandLine -like '*--no-sandbox*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" 2>nul
+echo Cleaning up session locks...
+del /F /Q "%~dp0.wwebjs_auth\session\SingletonLock" 2>nul
+echo All servers stopped successfully!
+pause
