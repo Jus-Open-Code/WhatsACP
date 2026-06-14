@@ -3,6 +3,7 @@ import { Roboto, Outfit } from "next/font/google";
 import "./globals.css";
 import LayoutWrapper from "@/components/LayoutWrapper";
 import { Toaster } from "react-hot-toast";
+import PageLoader from "@/components/PageLoader";
 
 const roboto = Roboto({
   variable: "--font-roboto",
@@ -43,6 +44,7 @@ export default function RootLayout({
         />
       </head>
       <body className="bg-background text-foreground font-sans min-h-screen transition-colors duration-200">
+        <PageLoader />
         <Toaster position="top-center" />
         <LayoutWrapper>
           {children}

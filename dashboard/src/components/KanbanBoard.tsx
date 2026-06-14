@@ -3,11 +3,12 @@
 import { useState, useEffect } from 'react';
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
 import toast, { Toaster } from 'react-hot-toast';
-import { Calendar, Search, Plus, Filter, LayoutList, Download, Printer, Settings, MoreHorizontal, Edit2, X, ChevronDown, ChevronLeft, ChevronRight, User, Trash2, Pin } from 'lucide-react';
+import { Calendar, Search, Plus, Filter, LayoutList, Download, Printer, Settings, MoreHorizontal, Edit2, X, ChevronDown, ChevronLeft, ChevronRight, User, Trash2, Pin, RefreshCw } from 'lucide-react';
 import { supabase } from '@/utils/supabase/client';
+import { io } from 'socket.io-client';
 
 interface Project {
-  id: number;
+  id: number | string;
   whatsapp_group_id: string;
   group_name: string;
   status: string;
@@ -48,6 +49,89 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
   const [projects, setProjects] = useState<Project[]>(initialProjects);
   const [view, setView] = useState<'list' | 'kanban'>('list');
   const [isBrowser, setIsBrowser] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Detect if Supabase credentials are placeholders (offline/fallback mode)
+  const isOffline = !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL.includes('placeholder') ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL === 'https://placeholder-project.supabase.co';
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      if (isOffline) {
+        // Offline mode: just reset to initial mock data
+        setProjects(initialProjects);
+        toast.success('Refreshed from local cache.');
+      } else {
+        const { data, error } = await supabase.from('projects').select('*').order('created_at', { ascending: false });
+        if (!error && data) {
+          setProjects(data);
+          toast.success('Group manager refreshed!');
+        } else {
+          setProjects(initialProjects);
+          toast.success('Refreshed from local cache.');
+        }
+      }
+    } catch {
+      setProjects(initialProjects);
+      toast.success('Refreshed from local cache.');
+    } finally {
+      setTimeout(() => setRefreshing(false), 600);
+    }
+  };
+
+  // Download project brief as .txt report
+  const downloadProjectBrief = (project: Project) => {
+    let crewList: CrewItem[] = [];
+    let pinsList: PinnedNote[] = [];
+    if (typeof window !== 'undefined') {
+      const savedCrew = localStorage.getItem(`brief_crew_${project.whatsapp_group_id}`);
+      if (savedCrew) crewList = JSON.parse(savedCrew);
+      const savedPins = localStorage.getItem(`brief_pins_${project.whatsapp_group_id}`);
+      if (savedPins) pinsList = JSON.parse(savedPins);
+    }
+    
+    let content = `# 📄 WhatsACP CRM — Project Brief Report\n\n`;
+    content += `==========================================\n`;
+    content += `Project/Group Name: ${project.group_name}\n`;
+    content += `Status:             ${project.status || 'Unassigned'}\n`;
+    content += `Event Month:        ${project.event_month || 'N/A'}\n`;
+    content += `WhatsApp Group ID:  ${project.whatsapp_group_id}\n`;
+    content += `==========================================\n\n`;
+    
+    content += `## 👥 CREW ASSIGNMENTS\n`;
+    if (crewList.length === 0) {
+      content += `No crew assigned yet.\n`;
+    } else {
+      crewList.forEach((member, i) => {
+        content += `${i + 1}. [${member.role.toUpperCase()}] ${member.name} — Phone: ${member.phone}\n`;
+      });
+    }
+    
+    content += `\n## 📌 PINNED BRIEF NOTES & GUIDELINES\n`;
+    if (pinsList.length === 0) {
+      content += `No pinned guidelines notes.\n`;
+    } else {
+      pinsList.forEach((pin, i) => {
+        content += `${i + 1}. [${pin.timestamp || 'Pinned'}] ${pin.text}\n`;
+      });
+    }
+    
+    content += `\n---\nReport generated on ${new Date().toLocaleString()}\n`;
+    
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const safeName = project.group_name.replace(/[^\w\s-]/g, '').trim() || "project";
+    link.href = url;
+    link.download = `Project_Brief_${safeName.replace(/\s+/g, '_')}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    toast.success(`Brief report downloaded for ${project.group_name}!`);
+  };
 
   // Details Drawer State
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
@@ -62,9 +146,39 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
   // Pin inputs
   const [pinText, setPinText] = useState('');
 
+  const [socket, setSocket] = useState<any>(null);
+
   useEffect(() => {
     setIsBrowser(true);
-  }, []);
+    
+    if (isOffline) {
+      const socketUrl = `http://${window.location.hostname}:3001`;
+      const socketClient = io(socketUrl, { transports: ['websocket', 'polling'] });
+      setSocket(socketClient);
+
+      socketClient.on('connect', () => {
+        socketClient.emit('get_projects');
+      });
+
+      socketClient.on('projects_response', (data: { projects: Project[]; error?: string }) => {
+        if (!data.error && data.projects && data.projects.length > 0) {
+          const mapped = data.projects.map(p => ({
+            ...p,
+            id: p.whatsapp_group_id // Ensure ID is a string (whatsapp_group_id) for dnd
+          }));
+          setProjects(mapped);
+        }
+      });
+
+      socketClient.on('groups_synced', () => {
+        socketClient.emit('get_projects');
+      });
+
+      return () => {
+        socketClient.disconnect();
+      };
+    }
+  }, [isOffline]);
 
   // Sync crew and pins from localStorage when selected project changes
   useEffect(() => {
@@ -101,15 +215,25 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
       setProjects(updatedProjects);
       toast.success(`Moved to ${destination.droppableId}!`);
 
-      // Realtime update to Supabase
-      const { error } = await supabase
-        .from('projects')
-        .update({ status: destination.droppableId })
-        .eq('id', parseInt(draggableId, 10));
+      // Only sync to Supabase if credentials are real
+      if (!isOffline) {
+        const { error } = await supabase
+          .from('projects')
+          .update({ status: destination.droppableId })
+          .eq('id', parseInt(draggableId, 10));
 
-      if (error) {
-        console.error("Error updating status in Supabase:", error);
-        toast.error("Failed to sync change to database.");
+        if (error) {
+          console.warn("Supabase sync skipped (offline mode):", error);
+        }
+      } else if (socket) {
+        const targetProj = projects.find(p => p.id.toString() === draggableId);
+        if (targetProj) {
+          socket.emit('update_project', {
+            jid: targetProj.whatsapp_group_id,
+            status: destination.droppableId,
+            event_month: targetProj.event_month || 'Unknown'
+          });
+        }
       }
     }
   };
@@ -235,6 +359,19 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
             </button>
           </div>
         </div>
+
+        {/* Right side: Group Manager Refresh Button */}
+        <button
+          type="button"
+          onClick={handleRefresh}
+          disabled={refreshing}
+          title="Refresh Group Manager"
+          aria-label="Refresh Group Manager"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 transition-all disabled:opacity-60 cursor-pointer"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+          <span>{refreshing ? 'Refreshing...' : 'Refresh'}</span>
+        </button>
       </div>
 
       {/* Second Header - Filters & Search */}
@@ -244,7 +381,7 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
             <input 
               type="text" 
               placeholder="Search Tasks..." 
-              className="pl-3 pr-8 py-1.5 border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 rounded text-sm w-64 focus:outline-none focus:border-blue-400 text-slate-800 dark:text-slate-200"
+              className="pl-3 pr-8 py-1.5 border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 rounded text-sm w-64 focus:outline-none focus:border-indigo-400 text-slate-800 dark:text-slate-200"
             />
             <Search className="w-4 h-4 text-slate-400 dark:text-slate-500 absolute right-2.5 top-2" />
           </div>
@@ -262,6 +399,7 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
                 <tr className="border-b border-slate-200 dark:border-slate-800">
                   <th className="py-3 px-4 font-bold text-slate-700 dark:text-slate-300 text-sm">Title</th>
                   <th className="py-3 px-4 font-bold text-slate-700 dark:text-slate-300 text-sm">Start date</th>
+                  <th className="py-3 px-4 font-bold text-slate-700 dark:text-slate-300 text-sm">Crew</th>
                   <th className="py-3 px-4 font-bold text-slate-700 dark:text-slate-300 text-sm">Status</th>
                   <th className="py-3 px-2 text-right"><MoreHorizontal className="w-4 h-4 inline-block text-slate-500" /></th>
                 </tr>
@@ -269,30 +407,85 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
               <tbody>
                 {projects.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="py-10 text-center text-slate-400 text-sm">No tasks found</td>
+                    <td colSpan={5} className="py-10 text-center text-slate-400 text-sm">No tasks found</td>
                   </tr>
                 ) : (
                   projects.map((project, index) => (
                     <tr key={project.id} className="border-b border-slate-100 dark:border-slate-800/60 hover:bg-slate-50 dark:hover:bg-slate-950/45 group transition-colors">
                       <td 
                         onClick={() => setSelectedProject(project)}
-                        className="py-3 px-4 text-sm font-medium text-blue-600 dark:text-blue-400 cursor-pointer hover:underline flex items-center gap-2"
+                        className="py-3 px-4 text-sm font-medium text-indigo-600 dark:text-indigo-400 cursor-pointer hover:underline"
                       >
                         {project.group_name}
-                        <div className="w-5 h-5 rounded-full bg-slate-200 dark:bg-slate-800 flex items-center justify-center flex-shrink-0">
-                          <Download className="w-3 h-3 text-white dark:text-slate-300" />
-                        </div>
                       </td>
                       <td className="py-3 px-4 text-sm text-slate-600 dark:text-slate-400">{project.event_month || '-'}</td>
                       <td className="py-3 px-4">
-                        <span className="bg-[#1a73e8] dark:bg-blue-600 text-white text-xs px-2.5 py-1 rounded">
+                        {(() => {
+                          let crewList: CrewItem[] = [];
+                          if (typeof window !== 'undefined') {
+                            const saved = localStorage.getItem(`brief_crew_${project.whatsapp_group_id}`);
+                            if (saved) crewList = JSON.parse(saved);
+                          }
+                          
+                          if (crewList.length === 0) {
+                            return (
+                              <div className="flex items-center gap-1.5 text-slate-400 dark:text-slate-500 text-xs select-none">
+                                <span className="w-5 h-5 rounded-full border border-dashed border-slate-300 dark:border-slate-700 flex items-center justify-center text-[10px] font-black">+</span>
+                                <span className="font-semibold text-[10px]">No crew</span>
+                              </div>
+                            );
+                          }
+                          
+                          return (
+                            <div className="flex -space-x-1.5 overflow-hidden">
+                              {crewList.slice(0, 3).map((member, idx) => (
+                                <div 
+                                  key={member.id || idx} 
+                                  className="w-6 h-6 rounded-full border border-white dark:border-slate-900 bg-gradient-to-tr from-indigo-500 to-indigo-400 text-white flex items-center justify-center text-[9px] font-black uppercase shadow-sm select-none"
+                                  title={`${member.name} (${member.role})`}
+                                >
+                                  {member.name.slice(0, 2)}
+                                </div>
+                              ))}
+                              {crewList.length > 3 && (
+                                <div className="w-6 h-6 rounded-full border border-white dark:border-slate-900 bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400 flex items-center justify-center text-[8px] font-bold shadow-sm select-none">
+                                  +{crewList.length - 3}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className="bg-indigo-650 dark:bg-indigo-700/80 text-white text-xs px-2.5 py-1 rounded">
                           {project.status || 'Unassigned'}
                         </span>
                       </td>
                       <td className="py-3 px-2 text-right opacity-0 group-hover:opacity-100 transition-opacity">
-                        <div className="flex items-center justify-end gap-1">
-                          <button className="p-1.5 border border-slate-200 dark:border-slate-800 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 dark:text-slate-500 cursor-pointer"><Edit2 className="w-3 h-3" /></button>
-                          <button className="p-1.5 border border-slate-200 dark:border-slate-800 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 dark:text-slate-500 cursor-pointer"><X className="w-3 h-3" /></button>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              downloadProjectBrief(project);
+                            }}
+                            className="p-1.5 border border-slate-200 dark:border-slate-800 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 cursor-pointer"
+                            title="Download Project Brief"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                          </button>
+                          <button 
+                            onClick={() => setSelectedProject(project)}
+                            className="p-1.5 border border-slate-200 dark:border-slate-800 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-450 dark:text-slate-500 cursor-pointer"
+                            title="Edit details"
+                          >
+                            <Edit2 className="w-3 h-3" />
+                          </button>
+                          <button 
+                            className="p-1.5 border border-slate-200 dark:border-slate-800 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-450 dark:text-slate-500 cursor-pointer"
+                            title="Delete"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -311,7 +504,7 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
               </div>
               <div className="flex items-center gap-1">
                 <button className="p-1 hover:text-slate-800 dark:hover:text-white cursor-pointer"><ChevronLeft className="w-4 h-4" /></button>
-                <button className="px-3 py-1 border border-blue-500 dark:border-blue-600 text-blue-600 dark:text-blue-400 rounded bg-white dark:bg-slate-950">1</button>
+                <button className="px-3 py-1 border border-indigo-500 dark:border-indigo-600 text-indigo-600 dark:text-indigo-400 rounded bg-white dark:bg-slate-950">1</button>
                 <button className="p-1 hover:text-slate-800 dark:hover:text-white cursor-pointer"><ChevronRight className="w-4 h-4" /></button>
               </div>
             </div>
@@ -349,7 +542,7 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
                                   {...provided.dragHandleProps}
                                   style={{ ...provided.draggableProps.style }}
                                   onClick={() => !snapshot.isDragging && setSelectedProject(project)}
-                                  className={`bg-white dark:bg-slate-900 p-4 rounded shadow-sm border cursor-pointer hover:border-slate-300 dark:hover:border-slate-700 transition-colors ${snapshot.isDragging ? 'border-blue-400 dark:border-blue-500 shadow-md' : 'border-slate-100 dark:border-slate-800/80'}`}
+                                  className={`bg-white dark:bg-slate-900 p-4 rounded shadow-sm border cursor-pointer hover:border-slate-300 dark:hover:border-slate-700 transition-colors ${snapshot.isDragging ? 'border-indigo-400 dark:border-indigo-500 shadow-md' : 'border-slate-100 dark:border-slate-800/80'}`}
                                 >
                                   <div className="flex items-center gap-2 mb-3 text-slate-500 dark:text-slate-400">
                                     <div className="w-5 h-5 rounded-full bg-slate-200 dark:bg-slate-800 flex items-center justify-center"><User className="w-3 h-3"/></div>
@@ -367,10 +560,51 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
                                     </div>
                                   </div>
 
-                                  <div className="flex items-center">
-                                    <div className="w-5 h-5 rounded-full bg-slate-200 dark:bg-slate-800 flex items-center justify-center flex-shrink-0">
-                                      <Download className="w-3 h-3 text-white dark:text-slate-300" />
-                                    </div>
+                                  <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-50 dark:border-slate-800/60">
+                                    {/* Crew avatars inside card */}
+                                    {(() => {
+                                      let crewList: CrewItem[] = [];
+                                      if (typeof window !== 'undefined') {
+                                        const saved = localStorage.getItem(`brief_crew_${project.whatsapp_group_id}`);
+                                        if (saved) crewList = JSON.parse(saved);
+                                      }
+                                      
+                                      if (crewList.length === 0) {
+                                        return <div className="text-[9px] text-slate-400 dark:text-slate-500 font-semibold italic select-none">No crew assigned</div>;
+                                      }
+                                      
+                                      return (
+                                        <div className="flex -space-x-1.5 overflow-hidden">
+                                          {crewList.slice(0, 3).map((member, idx) => (
+                                            <div 
+                                              key={member.id || idx} 
+                                              className="w-5.5 h-5.5 rounded-full border border-white dark:border-slate-900 bg-indigo-500 text-white flex items-center justify-center text-[8px] font-black uppercase shadow-sm select-none"
+                                              title={`${member.name} (${member.role})`}
+                                            >
+                                              {member.name.slice(0, 2)}
+                                            </div>
+                                          ))}
+                                          {crewList.length > 3 && (
+                                            <div className="w-5.5 h-5.5 rounded-full border border-white dark:border-slate-900 bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400 flex items-center justify-center text-[7px] font-bold shadow-sm select-none">
+                                              +{crewList.length - 3}
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })()}
+                                    
+                                    {/* Brief download button */}
+                                    <button 
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        downloadProjectBrief(project);
+                                      }}
+                                      className="w-6 h-6 rounded-full bg-slate-100 dark:bg-slate-850 hover:bg-indigo-50 dark:hover:bg-indigo-950 flex items-center justify-center flex-shrink-0 cursor-pointer text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 shadow-sm transition-colors duration-150"
+                                      title="Download Project Brief"
+                                    >
+                                      <Download className="w-3 h-3" />
+                                    </button>
                                   </div>
                                 </div>
                               )}
@@ -424,7 +658,7 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
                   <select 
                     value={selectedProject.status || 'Unassigned'}
                     onChange={(e) => handleStatusChange(e.target.value)}
-                    className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg px-3 py-2.5 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 shadow-sm appearance-none cursor-pointer"
+                    className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg px-3 py-2.5 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 shadow-sm appearance-none cursor-pointer"
                   >
                     <option value="Unassigned">Unassigned</option>
                     <option value="Pre-Prod">Pre-Prod</option>
@@ -445,7 +679,7 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
                   type="date" 
                   value={parseEventMonthToDate(selectedProject.event_month)}
                   onChange={(e) => handleDateChange(e.target.value)}
-                  className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg px-3 py-2.5 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 shadow-sm cursor-pointer"
+                  className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg px-3 py-2.5 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 shadow-sm cursor-pointer"
                 />
                 {selectedProject.event_month && selectedProject.event_month !== 'Unknown' && (
                   <div className="text-xs text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/50 rounded-md px-3 py-2 flex items-center gap-2">
@@ -469,7 +703,7 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
                     placeholder="Staff Name"
                     value={crewName}
                     onChange={(e) => setCrewName(e.target.value)}
-                    className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-blue-400 text-slate-800 dark:text-slate-200"
+                    className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-400 text-slate-800 dark:text-slate-200"
                   />
                   <div className="grid grid-cols-2 gap-2">
                     <input 
@@ -477,14 +711,14 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
                       placeholder="Role (e.g. Lead Film)"
                       value={crewRole}
                       onChange={(e) => setCrewRole(e.target.value)}
-                      className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-blue-400 text-slate-800 dark:text-slate-200"
+                      className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-400 text-slate-800 dark:text-slate-200"
                     />
                     <input 
                       type="text" 
                       placeholder="Phone"
                       value={crewPhone}
                       onChange={(e) => setCrewPhone(e.target.value)}
-                      className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-blue-400 text-slate-800 dark:text-slate-200"
+                      className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-400 text-slate-800 dark:text-slate-200"
                     />
                   </div>
                   <button 
@@ -532,7 +766,7 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
                     placeholder="Write a reference link, shooting coordinate, or brief note..."
                     value={pinText}
                     onChange={(e) => setPinText(e.target.value)}
-                    className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-blue-400 text-slate-800 dark:text-slate-200 resize-none font-sans"
+                    className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-400 text-slate-800 dark:text-slate-200 resize-none font-sans"
                   />
                   <button 
                     onClick={handleAddPin}

@@ -2,6 +2,14 @@ import { createClient } from '@/utils/supabase/server'
 import { cookies } from 'next/headers'
 import KanbanBoard from '@/components/KanbanBoard'
 
+const isSupabaseConfigured = () => {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  if (!url || !key) return false;
+  if (url.includes('placeholder') || key.includes('placeholder')) return false;
+  return true;
+};
+
 export default async function Page() {
   const cookieStore = await cookies()
   const supabase = createClient(cookieStore)
@@ -10,16 +18,21 @@ export default async function Page() {
   let error = null
   let isOffline = false
 
-  try {
-    // Fetch all projects from Supabase
-    const { data, error: fetchError } = await supabase.from('projects').select('*').order('created_at', { ascending: false })
-    if (fetchError) {
-      error = fetchError
-    } else {
-      projects = data || []
+  if (isSupabaseConfigured()) {
+    try {
+      // Fetch all projects from Supabase
+      const { data, error: fetchError } = await supabase.from('projects').select('*').order('created_at', { ascending: false })
+      if (fetchError) {
+        error = fetchError
+      } else {
+        projects = data || []
+      }
+    } catch (err: any) {
+      error = err
     }
-  } catch (err: any) {
-    error = err
+  } else {
+    // Skip network request and trigger mock fallback immediately
+    error = new Error("Supabase is in placeholder/mock mode");
   }
 
   if (error) {

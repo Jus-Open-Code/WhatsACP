@@ -32,7 +32,9 @@ import {
   FolderHeart,
   FileText,
   FileDown,
-  Sparkles
+  Sparkles,
+  RefreshCw,
+  Filter
 } from "lucide-react";
 import toast from "react-hot-toast";
 
@@ -130,6 +132,10 @@ export default function ChatPage() {
     return [];
   });
   const [activeProject, setActiveProject] = useState<Project | null>(null);
+  const activeProjectRef = useRef<Project | null>(null);
+  useEffect(() => {
+    activeProjectRef.current = activeProject;
+  }, [activeProject]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -207,6 +213,13 @@ export default function ChatPage() {
   const [yearPickerOpen, setYearPickerOpen] = useState(false);
   const [decadeStartYear, setDecadeStartYear] = useState<number>(2020);
   const [monthlyYearlyFilterApplied, setMonthlyYearlyFilterApplied] = useState(false);
+
+  // Filter & New Chat UI states
+  const [filterPopoverOpen, setFilterPopoverOpen] = useState(false);
+  const [newChatModalOpen, setNewChatModalOpen] = useState(false);
+  const [newChatPhone, setNewChatPhone] = useState("");
+  const [newChatName, setNewChatName] = useState("");
+  const [newChatStatus, setNewChatStatus] = useState("Unassigned");
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -308,7 +321,7 @@ export default function ChatPage() {
   // Setup WebSocket connection
   useEffect(() => {
     const socketUrl = `http://${window.location.hostname}:3001`;
-    const socketClient = io(socketUrl);
+    const socketClient = io(socketUrl, { transports: ['websocket', 'polling'] });
 
     socketClient.on("connect", () => {
       setConnected(true);
@@ -368,7 +381,7 @@ export default function ChatPage() {
 
     // Handle historical messages response
     socketClient.on("chat_messages_response", (data: { chatId: string; messages: Message[]; error?: string }) => {
-      if (activeProject && data.chatId === activeProject.whatsapp_group_id) {
+      if (activeProjectRef.current && data.chatId === activeProjectRef.current.whatsapp_group_id) {
         setMessages(data.messages || []);
         if (data.messages && data.messages.length > 0) {
           const lastMsg = data.messages[data.messages.length - 1];
@@ -381,8 +394,11 @@ export default function ChatPage() {
     // Handle message sending status
     socketClient.on("send_chat_message_success", (data: { chatId: string; message: Message }) => {
       toast.dismiss(); // Dismiss the media sending loader
-      if (activeProject && data.chatId === activeProject.whatsapp_group_id) {
-        setMessages(prev => [...prev, data.message]);
+      if (activeProjectRef.current && data.chatId === activeProjectRef.current.whatsapp_group_id) {
+        setMessages(prev => {
+          if (prev.some(m => m.id === data.message.id)) return prev;
+          return [...prev, data.message];
+        });
       }
       setLastMessages(prev => ({ ...prev, [data.chatId]: data.message.body }));
       setLastMessageTimestamps(prev => ({ ...prev, [data.chatId]: data.message.timestamp }));
@@ -394,8 +410,11 @@ export default function ChatPage() {
 
     // Handle streaming incoming messages
     socketClient.on("incoming_message", (data: { chatId: string; message: Message }) => {
-      if (activeProject && data.chatId === activeProject.whatsapp_group_id) {
-        setMessages(prev => [...prev, data.message]);
+      if (activeProjectRef.current && data.chatId === activeProjectRef.current.whatsapp_group_id) {
+        setMessages(prev => {
+          if (prev.some(m => m.id === data.message.id)) return prev;
+          return [...prev, data.message];
+        });
       } else {
         setUnreadCounts(prev => ({
           ...prev,
@@ -428,7 +447,7 @@ export default function ChatPage() {
 
     // Handle database-backed pinned notes responses
     socketClient.on("pinned_notes_response", (data: { chatId: string; notes: any[]; error?: string }) => {
-      if (activeProject && data.chatId === activeProject.whatsapp_group_id) {
+      if (activeProjectRef.current && data.chatId === activeProjectRef.current.whatsapp_group_id) {
         const mapped = (data.notes || []).map(note => ({
           id: note.id,
           text: note.content,
@@ -439,7 +458,7 @@ export default function ChatPage() {
     });
 
     socketClient.on("pinned_note_added", (data: { chatId: string; note: any }) => {
-      if (activeProject && data.chatId === activeProject.whatsapp_group_id) {
+      if (activeProjectRef.current && data.chatId === activeProjectRef.current.whatsapp_group_id) {
         const mappedNote = {
           id: data.note.id,
           text: data.note.content,
@@ -450,7 +469,7 @@ export default function ChatPage() {
     });
 
     socketClient.on("pinned_note_deleted", (data: { chatId: string; noteId: string }) => {
-      if (activeProject && data.chatId === activeProject.whatsapp_group_id) {
+      if (activeProjectRef.current && data.chatId === activeProjectRef.current.whatsapp_group_id) {
         setPinnedList(prev => prev.filter(note => note.id !== data.noteId));
       }
     });
@@ -461,7 +480,7 @@ export default function ChatPage() {
 
     // Handle group participants retrieval (Member Exporter & Auto group list)
     socketClient.on("group_participants_response", (data: { chatId: string; participants: Participant[]; error?: string }) => {
-      if (activeProject && data.chatId === activeProject.whatsapp_group_id) {
+      if (activeProjectRef.current && data.chatId === activeProjectRef.current.whatsapp_group_id) {
         if (!data.error) {
           setParticipants(data.participants || []);
           setGroupMembers(data.participants || []);
@@ -485,10 +504,25 @@ export default function ChatPage() {
       setMessages(prev => prev.map(m => m.id === data.messageId ? { ...m, ack: data.ack } : m));
     });
 
+    // Listen for WhatsApp becoming ready to load/refresh chats
+    socketClient.on("whatsapp_ready", () => {
+      toast.success("WhatsApp client is ready! Syncing chats...");
+      socketClient.emit("get_projects");
+      if (activeProjectRef.current) {
+        const jid = activeProjectRef.current.whatsapp_group_id;
+        socketClient.emit("get_chat_messages", { chatId: jid });
+        if (jid.endsWith('@g.us')) {
+          socketClient.emit("get_group_participants", { chatId: jid });
+        } else {
+          socketClient.emit("get_online_status", { chatId: jid });
+        }
+      }
+    });
+
     return () => {
       socketClient.disconnect();
     };
-  }, [activeProject]);
+  }, []);
 
   // Auto scroll messages to bottom
   useEffect(() => {
@@ -916,7 +950,7 @@ export default function ChatPage() {
       matchesInboxStatus = unreadCount === 0;
     }
 
-    return matchesSearch && matchesStatus && matchesDate && matchesInboxStatus;
+    return matchesSearch && matchesInboxStatus && matchesStatus && matchesDate;
   });
 
   // Inbox Triage: sort by unread count first (floating them to top), then by last message timestamp / creation timestamp
@@ -978,466 +1012,134 @@ export default function ChatPage() {
           </div>
         </div>
 
-        {/* Search bar */}
+        {/* Search bar row with three-dots button */}
         <div className="px-4 py-2 space-y-3">
-          <div className="relative">
-            <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400 dark:text-slate-500" />
-            <input 
-              type="text" 
-              placeholder="Search..." 
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 text-xs bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-800 dark:text-slate-200 transition-colors"
-            />
+          <div className="flex items-center gap-2">
+            <button className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800/60 rounded-full transition shrink-0 cursor-pointer" title="More Options">
+              <MoreVertical className="w-4 h-4" />
+            </button>
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400 dark:text-slate-500" />
+              <input 
+                type="text" 
+                placeholder="Search..." 
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 text-xs bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-800 dark:text-slate-200 transition-colors"
+              />
+            </div>
           </div>
 
-          {/* Inbox pills filter: All, Unread, Read */}
-          <div className="flex gap-1.5 border-b border-slate-100 dark:border-slate-800 pb-2">
-            <button
-              onClick={() => setInboxStatusFilter('all')}
-              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
-                inboxStatusFilter === 'all' ? 'bg-indigo-50 dark:bg-indigo-950/45 text-indigo-700 dark:text-indigo-300 font-bold' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/40'
-              }`}
-            >
-              All
-            </button>
-            <button
-              onClick={() => setInboxStatusFilter('unread')}
-              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
-                inboxStatusFilter === 'unread' ? 'bg-indigo-50 dark:bg-indigo-950/45 text-indigo-700 dark:text-indigo-300 font-bold' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/40'
-              }`}
-            >
-              Unread
-            </button>
-            <button
-              onClick={() => setInboxStatusFilter('read')}
-              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
-                inboxStatusFilter === 'read' ? 'bg-indigo-50 dark:bg-indigo-950/45 text-indigo-700 dark:text-indigo-300 font-bold' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/40'
-              }`}
-            >
-              Read
-            </button>
-          </div>
-
-          {/* Advanced filters dropdowns */}
-          <div className="space-y-2.5 pb-2.5 border-b border-slate-100/60 dark:border-slate-800">
-            <div>
-              <label className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block mb-1">Stage</label>
-              <select 
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-                className="w-full text-[11px] bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-1.5 rounded-lg focus:outline-none text-slate-700 dark:text-slate-300 font-semibold cursor-pointer"
+          {/* Inbox pills filter tabs with Filter and New Chat buttons on the right */}
+          <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
+            <div className="flex gap-1.5">
+              <button
+                onClick={() => setInboxStatusFilter('all')}
+                className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
+                  inboxStatusFilter === 'all' ? 'bg-indigo-50 dark:bg-indigo-950/45 text-indigo-700 dark:text-indigo-300 font-bold' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/40'
+                }`}
               >
-                <option value="All">All Stages</option>
-                <option value="Unassigned">Unassigned</option>
-                <option value="Pre-Prod">Pre-Prod</option>
-                <option value="Production">Production</option>
-                <option value="Editing">Editing</option>
-                <option value="Revisions">Revisions</option>
-                <option value="Completed">Completed</option>
-              </select>
+                All
+              </button>
+              <button
+                onClick={() => setInboxStatusFilter('unread')}
+                className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
+                  inboxStatusFilter === 'unread' ? 'bg-indigo-50 dark:bg-indigo-950/45 text-indigo-700 dark:text-indigo-300 font-bold' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/40'
+                }`}
+              >
+                Unread
+              </button>
+              <button
+                onClick={() => setInboxStatusFilter('read')}
+                className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
+                  inboxStatusFilter === 'read' ? 'bg-[#e6f7f4] dark:bg-[#00a884]/15 text-[#00a884] dark:text-[#00e676] font-bold border border-[#00a884]/10' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/40'
+                }`}
+              >
+                Read
+              </button>
             </div>
-            {/* Shoot Date Tabs Filter */}
-            <div className="space-y-1.5 pt-1">
-              <label className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block">Shoot Date Filter</label>
-              
-              {/* Tab Pills */}
-              <div className="flex bg-slate-100 dark:bg-[#1e222b] border border-slate-200 dark:border-slate-700/35 p-0.5 rounded-lg text-slate-500 dark:text-slate-400 font-semibold text-[10px] gap-1 select-none">
-                {(['Monthly', 'Yearly', 'Custom', 'Dynamic'] as const).map(tab => (
-                  <button
-                    key={tab}
-                    type="button"
-                    onClick={() => {
-                      setFilterTab(tab);
-                      if (tab !== 'Custom') {
-                        setCustomFilterApplied(false);
-                      }
-                    }}
-                    className={`flex-1 py-1 rounded-md transition text-center cursor-pointer text-[9px] ${
-                      filterTab === tab 
-                        ? 'bg-white dark:bg-[#2b303c] text-slate-800 dark:text-white font-bold shadow-sm' 
-                        : 'hover:text-slate-850 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-slate-800/40'
-                    }`}
-                  >
-                    {tab}
-                  </button>
-                ))}
-              </div>
 
-              {/* Sub-inputs container */}
-              <div className="pt-1">
-                {filterTab === 'Monthly' && (() => {
-                  const monthsShort = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                  const monthsFull = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-                  
-                  const navigateMonth = (direction: 'prev' | 'next') => {
-                    let newMonth = selectedFilterMonth;
-                    let newYear = selectedFilterYear;
-                    if (direction === 'prev') {
-                      if (selectedFilterMonth === 0) {
-                        newMonth = 11;
-                        newYear = selectedFilterYear - 1;
-                      } else {
-                        newMonth = selectedFilterMonth - 1;
-                      }
-                    } else {
-                      if (selectedFilterMonth === 11) {
-                        newMonth = 0;
-                        newYear = selectedFilterYear + 1;
-                      } else {
-                        newMonth = selectedFilterMonth + 1;
-                      }
-                    }
-                    setSelectedFilterMonth(newMonth);
-                    setSelectedFilterYear(newYear);
-                    setMonthlyYearlyFilterApplied(true);
-                  };
-
-                  return (
-                    <div className="flex items-center gap-1.5 animate-in fade-in duration-150 relative">
-                      {/* Navigation Controls */}
-                      <button
-                        type="button"
-                        onClick={() => navigateMonth('prev')}
-                        className="w-8 h-8 flex items-center justify-center bg-[#2a2f3a] hover:bg-slate-700 text-slate-200 hover:text-white rounded-lg transition-colors cursor-pointer border border-slate-700/40 font-bold text-xs"
+            {/* Filter and New Chat icons */}
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <button 
+                  onClick={() => setFilterPopoverOpen(!filterPopoverOpen)}
+                  className={`relative w-8 h-8 rounded-full border flex items-center justify-center transition shrink-0 cursor-pointer ${
+                    statusFilter !== "All"
+                      ? "border-[#00a884] text-[#00a884] bg-[#e6f7f4] dark:bg-[#00a884]/15 dark:border-[#00a884]/30"
+                      : "border-slate-200 dark:border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                  }`}
+                  title="Filter Options"
+                >
+                  <Filter className="w-3.5 h-3.5" />
+                  {statusFilter !== "All" && (
+                    <span className="absolute -top-1.5 -right-1.5 bg-emerald-500 text-slate-950 font-bold text-[9px] w-4 h-4 rounded-full flex items-center justify-center border-2 border-slate-900">
+                      1
+                    </span>
+                  )}
+                </button>
+                
+                {/* Filter Popover Dropdown */}
+                <AnimatePresence>
+                  {filterPopoverOpen && (
+                    <>
+                      <div className="fixed inset-0 z-20 cursor-default" onClick={() => setFilterPopoverOpen(false)} />
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.95, y: 4 }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95, y: 4 }}
+                        transition={{ type: "spring", stiffness: 350, damping: 22 }}
+                        className="absolute right-0 mt-2 bg-white dark:bg-[#233138] border border-slate-200 dark:border-slate-850 text-slate-800 dark:text-slate-200 rounded-xl shadow-xl p-2 z-30 w-44 select-none space-y-1"
                       >
-                        &lt;
-                      </button>
-                      
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setMonthPickerOpen(!monthPickerOpen);
-                          setYearPickerOpen(false);
-                        }}
-                        className="flex-1 h-8 flex items-center justify-center bg-[#2a2f3a] hover:bg-slate-700 text-slate-200 hover:text-white rounded-lg transition-colors cursor-pointer border border-slate-700/40 text-[11px] font-bold"
-                      >
-                        {monthsFull[selectedFilterMonth]} {selectedFilterYear}
-                      </button>
-                      
-                      <button
-                        type="button"
-                        onClick={() => navigateMonth('next')}
-                        className="w-8 h-8 flex items-center justify-center bg-[#2a2f3a] hover:bg-slate-700 text-slate-200 hover:text-white rounded-lg transition-colors cursor-pointer border border-slate-700/40 font-bold text-xs"
-                      >
-                        &gt;
-                      </button>
-
-                      {/* Apply Button */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setMonthlyYearlyFilterApplied(true);
-                          toast.success(`Filter applied for ${monthsShort[selectedFilterMonth]} ${selectedFilterYear}`);
-                          setMonthPickerOpen(false);
-                        }}
-                        className={`w-8 h-8 flex items-center justify-center rounded-lg transition-all cursor-pointer shadow-sm text-white ${
-                          monthlyYearlyFilterApplied 
-                            ? 'bg-emerald-500 hover:bg-emerald-600 shadow-emerald-500/15' 
-                            : 'bg-emerald-600/40 hover:bg-emerald-500 text-emerald-100'
-                        }`}
-                        title="Apply Month Filter"
-                      >
-                        <Check className="w-4 h-4" />
-                      </button>
-
-                      {/* Clear Button */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setMonthlyYearlyFilterApplied(false);
-                          setSelectedFilterMonth(new Date().getMonth());
-                          setSelectedFilterYear(new Date().getFullYear());
-                          toast.success("Month filter cleared");
-                          setMonthPickerOpen(false);
-                        }}
-                        className="w-8 h-8 flex items-center justify-center bg-[#2a2f3a] hover:bg-slate-700 text-slate-400 hover:text-slate-200 rounded-lg transition-all cursor-pointer border border-slate-700/40"
-                        title="Clear Month Filter"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-
-                      {/* Month Picker Dropdown Grid */}
-                      <AnimatePresence>
-                        {monthPickerOpen && (
-                          <>
-                            <div className="fixed inset-0 z-20 cursor-default" onClick={() => setMonthPickerOpen(false)} />
-                            <motion.div
-                              initial={{ opacity: 0, scale: 0.95, y: -4 }}
-                              animate={{ opacity: 1, scale: 1, y: 0 }}
-                              exit={{ opacity: 0, scale: 0.95, y: -4 }}
-                              transition={{ type: "spring", stiffness: 350, damping: 22 }}
-                              className="absolute top-9 left-0 right-0 bg-[#1a1d24] border border-slate-800 text-slate-200 rounded-xl shadow-2xl p-3 z-30 origin-top"
+                        <div className="text-[9px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-wider px-2 py-1 border-b border-slate-100 dark:border-slate-800">
+                          Filter by Stage
+                        </div>
+                        <div className="flex flex-col gap-0.5">
+                          {[
+                            { value: "All", label: "All Stages" },
+                            { value: "Unassigned", label: "Unassigned" },
+                            { value: "Pre-Prod", label: "Pre-Prod" },
+                            { value: "Production", label: "Production" },
+                            { value: "Editing", label: "Editing" },
+                            { value: "Revisions", label: "Revisions" },
+                            { value: "Completed", label: "Completed" }
+                          ].map((item) => (
+                            <button
+                              key={item.value}
+                              type="button"
+                              onClick={() => {
+                                setStatusFilter(item.value);
+                                setFilterPopoverOpen(false);
+                                toast.success(`Filtered by: ${item.label}`);
+                              }}
+                              className={`w-full text-left px-2 py-1.5 rounded-lg text-xs font-semibold flex items-center justify-between transition ${
+                                statusFilter === item.value
+                                  ? "bg-indigo-50/50 dark:bg-slate-800 text-indigo-650 dark:text-indigo-400 font-bold"
+                                  : "hover:bg-slate-50 dark:hover:bg-slate-800/40 text-slate-500 dark:text-slate-400"
+                              }`}
                             >
-                              {/* Triangle Caret Pointer */}
-                              <div className="absolute -top-1.5 left-[116px] w-3 h-3 bg-[#1a1d24] rotate-45 border-t border-l border-slate-800"></div>
-                              
-                              {/* Header */}
-                              <div className="flex justify-between items-center pb-2.5 mb-2.5 border-b border-slate-800 text-xs font-bold text-slate-400 select-none px-1 relative z-10">
-                                <button
-                                  type="button"
-                                  onClick={() => setSelectedFilterYear(prev => prev - 1)}
-                                  className="p-1 hover:text-slate-100 transition cursor-pointer text-sm font-bold"
-                                >
-                                  &laquo;
-                                </button>
-                                <span className="text-slate-200 font-bold text-xs">{selectedFilterYear}</span>
-                                <button
-                                  type="button"
-                                  onClick={() => setSelectedFilterYear(prev => prev + 1)}
-                                  className="p-1 hover:text-slate-100 transition cursor-pointer text-sm font-bold"
-                                >
-                                  &raquo;
-                                </button>
-                              </div>
-                              
-                              {/* Grid */}
-                              <div className="grid grid-cols-4 gap-1.5 text-center text-xs font-semibold relative z-10">
-                                {monthsShort.map((m, idx) => (
-                                  <button
-                                    type="button"
-                                    key={m}
-                                    onClick={() => {
-                                      setSelectedFilterMonth(idx);
-                                      setMonthlyYearlyFilterApplied(true);
-                                      setMonthPickerOpen(false);
-                                    }}
-                                    className={`py-2 rounded-lg transition-colors cursor-pointer text-center ${
-                                      selectedFilterMonth === idx 
-                                        ? 'bg-[#2b303c] text-white font-bold' 
-                                        : 'hover:bg-slate-800 text-slate-400 hover:text-slate-200'
-                                    }`}
-                                  >
-                                    {m}
-                                  </button>
-                                ))}
-                              </div>
-                            </motion.div>
-                          </>
-                        )}
-                      </AnimatePresence>
-                    </div>
-                  );
-                })()}
-
-                {filterTab === 'Yearly' && (
-                  <div className="flex items-center gap-1.5 animate-in fade-in duration-150 relative">
-                    {/* Navigation Controls */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedFilterYear(prev => prev - 1);
-                        setMonthlyYearlyFilterApplied(true);
-                      }}
-                      className="w-8 h-8 flex items-center justify-center bg-[#2a2f3a] hover:bg-slate-700 text-slate-200 hover:text-white rounded-lg transition-colors cursor-pointer border border-slate-700/40 font-bold text-xs"
-                    >
-                      &lt;
-                    </button>
-                    
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setYearPickerOpen(!yearPickerOpen);
-                        setMonthPickerOpen(false);
-                        setDecadeStartYear(Math.floor(selectedFilterYear / 10) * 10);
-                      }}
-                      className="flex-1 h-8 flex items-center justify-center bg-[#2a2f3a] hover:bg-slate-700 text-slate-200 hover:text-white rounded-lg transition-colors cursor-pointer border border-slate-700/40 text-[11px] font-bold"
-                    >
-                      {selectedFilterYear}
-                    </button>
-                    
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedFilterYear(prev => prev + 1);
-                        setMonthlyYearlyFilterApplied(true);
-                      }}
-                      className="w-8 h-8 flex items-center justify-center bg-[#2a2f3a] hover:bg-slate-700 text-slate-200 hover:text-white rounded-lg transition-colors cursor-pointer border border-slate-700/40 font-bold text-xs"
-                    >
-                      &gt;
-                    </button>
-
-                    {/* Apply Button */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMonthlyYearlyFilterApplied(true);
-                        toast.success(`Filter applied for Year ${selectedFilterYear}`);
-                        setYearPickerOpen(false);
-                      }}
-                      className={`w-8 h-8 flex items-center justify-center rounded-lg transition-all cursor-pointer shadow-sm text-white ${
-                        monthlyYearlyFilterApplied 
-                          ? 'bg-emerald-500 hover:bg-emerald-600 shadow-emerald-500/15' 
-                          : 'bg-emerald-600/40 hover:bg-emerald-500 text-emerald-100'
-                      }`}
-                      title="Apply Year Filter"
-                    >
-                      <Check className="w-4 h-4" />
-                    </button>
-
-                    {/* Clear Button */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMonthlyYearlyFilterApplied(false);
-                        setSelectedFilterYear(new Date().getFullYear());
-                        toast.success("Year filter cleared");
-                        setYearPickerOpen(false);
-                      }}
-                      className="w-8 h-8 flex items-center justify-center bg-[#2a2f3a] hover:bg-slate-700 text-slate-400 hover:text-slate-200 rounded-lg transition-all cursor-pointer border border-slate-700/40"
-                      title="Clear Year Filter"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-
-                    {/* Year Picker Dropdown Grid */}
-                    <AnimatePresence>
-                      {yearPickerOpen && (
-                        <>
-                          <div className="fixed inset-0 z-20 cursor-default" onClick={() => setYearPickerOpen(false)} />
-                          <motion.div
-                            initial={{ opacity: 0, scale: 0.95, y: -4 }}
-                            animate={{ opacity: 1, scale: 1, y: 0 }}
-                            exit={{ opacity: 0, scale: 0.95, y: -4 }}
-                            transition={{ type: "spring", stiffness: 350, damping: 22 }}
-                            className="absolute top-9 left-0 right-0 bg-[#1a1d24] border border-slate-800 text-slate-200 rounded-xl shadow-2xl p-3 z-30 origin-top"
-                          >
-                            {/* Triangle Caret Pointer */}
-                            <div className="absolute -top-1.5 left-[116px] w-3 h-3 bg-[#1a1d24] rotate-45 border-t border-l border-slate-800"></div>
-                            
-                            {/* Header */}
-                            <div className="flex justify-between items-center pb-2.5 mb-2.5 border-b border-slate-800 text-xs font-bold text-slate-400 select-none px-1 relative z-10">
-                              <button
-                                type="button"
-                                onClick={() => setDecadeStartYear(prev => prev - 10)}
-                                className="p-1 hover:text-slate-100 transition cursor-pointer text-sm font-bold"
-                              >
-                                &laquo;
-                              </button>
-                              <span className="text-slate-200 font-bold text-xs">{decadeStartYear} - {decadeStartYear + 9}</span>
-                              <button
-                                type="button"
-                                onClick={() => setDecadeStartYear(prev => prev + 10)}
-                                className="p-1 hover:text-slate-100 transition cursor-pointer text-sm font-bold"
-                              >
-                                &raquo;
-                              </button>
-                            </div>
-                            
-                            {/* Grid */}
-                            <div className="grid grid-cols-4 gap-1.5 text-center text-xs font-semibold relative z-10">
-                              {Array.from({ length: 12 }, (_, i) => decadeStartYear - 1 + i).map(year => {
-                                const isOut = year < decadeStartYear || year > (decadeStartYear + 9);
-                                return (
-                                  <button
-                                    type="button"
-                                    key={year}
-                                    onClick={() => {
-                                      setSelectedFilterYear(year);
-                                      setDecadeStartYear(Math.floor(year / 10) * 10);
-                                      setMonthlyYearlyFilterApplied(true);
-                                      setYearPickerOpen(false);
-                                    }}
-                                    className={`py-2 rounded-lg transition-colors cursor-pointer text-center ${
-                                      selectedFilterYear === year 
-                                        ? 'bg-[#2b303c] text-white font-bold' 
-                                        : isOut
-                                          ? 'text-slate-600 hover:bg-slate-800/40 hover:text-slate-500 font-medium'
-                                          : 'hover:bg-slate-800 text-slate-400 hover:text-slate-200'
-                                    }`}
-                                  >
-                                    {year}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </motion.div>
-                        </>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                )}
-
-                {filterTab === 'Custom' && (
-                  <div className="flex items-center gap-1.5 animate-in slide-in-from-top-1 duration-150">
-                    <input 
-                      type="date" 
-                      value={customStartDate}
-                      onChange={(e) => {
-                        setCustomStartDate(e.target.value);
-                        setCustomFilterApplied(false);
-                      }}
-                      className="flex-1 min-w-0 px-2 py-1.5 bg-[#2a2f3a] border border-slate-700/40 rounded-lg focus:outline-none text-[10px] text-slate-200 font-semibold focus:ring-1 focus:ring-emerald-500 cursor-pointer"
-                      title="From Date"
-                    />
-                    <span className="text-[10px] text-slate-400 font-bold shrink-0">to</span>
-                    <input 
-                      type="date" 
-                      value={customEndDate}
-                      onChange={(e) => {
-                        setCustomEndDate(e.target.value);
-                        setCustomFilterApplied(false);
-                      }}
-                      className="flex-1 min-w-0 px-2 py-1.5 bg-[#2a2f3a] border border-slate-700/40 rounded-lg focus:outline-none text-[10px] text-slate-200 font-semibold focus:ring-1 focus:ring-emerald-500 cursor-pointer"
-                      title="To Date"
-                    />
-                    
-                    {/* Apply Button */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (customStartDate || customEndDate) {
-                          setCustomFilterApplied(true);
-                          toast.success("Date range filter applied!");
-                        } else {
-                          toast.error("Select at least one date");
-                        }
-                      }}
-                      className={`w-8 h-8 flex items-center justify-center rounded-lg transition-all cursor-pointer shadow-sm text-white ${
-                        customFilterApplied 
-                          ? 'bg-emerald-500 hover:bg-emerald-600' 
-                          : 'bg-emerald-600/40 hover:bg-emerald-500 text-emerald-100'
-                      }`}
-                      title="Apply Filter"
-                    >
-                      <Check className="w-4 h-4" />
-                    </button>
-                    
-                    {/* Clear Button */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCustomStartDate('');
-                        setCustomEndDate('');
-                        setCustomFilterApplied(false);
-                        toast.success("Date range reset");
-                      }}
-                      className="w-8 h-8 flex items-center justify-center bg-[#2a2f3a] hover:bg-slate-700 text-slate-400 hover:text-slate-200 rounded-lg transition-all cursor-pointer border border-slate-700/40"
-                      title="Clear Filter"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
-
-                {filterTab === 'Dynamic' && (
-                  <select 
-                    value={dynamicFilter}
-                    onChange={(e) => setDynamicFilter(e.target.value)}
-                    className="w-full text-xs bg-[#2d323f] border border-slate-700/40 p-2 rounded-lg focus:outline-none text-slate-200 font-semibold animate-in fade-in duration-150 cursor-pointer hover:bg-slate-700/80 transition-all"
-                  >
-                    <option value="This Month">This Month</option>
-                    <option value="Last Month">Last Month</option>
-                    <option value="Next Month">Next Month</option>
-                    <option value="This Year">This Year</option>
-                    <option value="Direct Chats">Direct Chats Only</option>
-                    <option value="Unknown">Unknown Dates Only</option>
-                  </select>
-                )}
+                              <span>{item.label}</span>
+                              {statusFilter === item.value && <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />}
+                            </button>
+                          ))}
+                        </div>
+                      </motion.div>
+                    </>
+                  )}
+                </AnimatePresence>
               </div>
+              
+              <button 
+                onClick={() => setNewChatModalOpen(true)}
+                className="w-8 h-8 rounded-full border border-slate-200 dark:border-slate-800 flex items-center justify-center text-slate-400 hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition shrink-0 cursor-pointer"
+                title="New Chat"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
             </div>
-
           </div>
+
+
         </div>
 
         {/* Group Chat List container */}
@@ -1465,7 +1167,7 @@ export default function ChatPage() {
                     onClick={() => setActiveProject(project)}
                     className={`w-full p-4 flex gap-3 text-left transition-all relative ${
                       isActive 
-                        ? 'bg-slate-50/70 dark:bg-slate-800/60 border-l-4 border-emerald-600' 
+                        ? 'bg-slate-50/70 dark:bg-slate-800/60 border-l-4 border-indigo-600' 
                         : 'hover:bg-slate-50/40 dark:hover:bg-slate-850/25 border-l-4 border-transparent'
                     }`}
                   >
@@ -1493,10 +1195,10 @@ export default function ChatPage() {
 
                       <p className="text-slate-500 text-[11px] truncate leading-tight flex items-center gap-1">
                         {typingStatus[jid] ? (
-                          <span className="text-emerald-600 font-semibold animate-pulse">typing...</span>
+                          <span className="text-indigo-600 font-semibold animate-pulse">typing...</span>
                         ) : (
                           <>
-                            {isActive ? <ArrowUpRight className="w-3 h-3 text-emerald-500 shrink-0" /> : <ArrowDownLeft className="w-3 h-3 text-slate-400 shrink-0" />}
+                            {isActive ? <ArrowUpRight className="w-3 h-3 text-indigo-500 shrink-0" /> : <ArrowDownLeft className="w-3 h-3 text-slate-400 shrink-0" />}
                             {lastMsg || "Click to open conversation..."}
                           </>
                         )}
@@ -1504,7 +1206,7 @@ export default function ChatPage() {
 
                       <div className="flex justify-between items-center pt-1 w-full">
                         {/* Channel Badge (whatsApp) */}
-                        <span className={`text-[9px] font-bold text-white px-1.5 py-0.5 rounded ${project.whatsapp_group_id.endsWith('@g.us') ? 'bg-indigo-600' : 'bg-emerald-500'}`}>
+                        <span className={`text-[9px] font-bold text-white px-1.5 py-0.5 rounded ${project.whatsapp_group_id.endsWith('@g.us') ? 'bg-indigo-600' : 'bg-indigo-500'}`}>
                           {project.whatsapp_group_id.endsWith('@g.us') ? 'Group Chat' : 'Direct Chat'}
                         </span>
                         
@@ -1515,7 +1217,7 @@ export default function ChatPage() {
 
                         {/* Unread badge */}
                         {unread > 0 && (
-                          <span className="bg-emerald-500 text-white text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center shrink-0">
+                          <span className="bg-indigo-500 text-white text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center shrink-0">
                             {unread}
                           </span>
                         )}
@@ -1530,12 +1232,20 @@ export default function ChatPage() {
       </div>
 
       {/* CENTER PANE: Messenger history & input bar */}
-      <div className="flex-1 flex flex-col bg-[#efeae2] dark:bg-[#0b141a] relative overflow-hidden" style={{ backgroundImage: "url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png')", backgroundBlendMode: "overlay", opacity: 0.99 }}>
+      <div className="flex-1 flex flex-col bg-[#efeae2] dark:bg-[#0b141a] relative overflow-hidden">
+        <div 
+          className="absolute inset-0 z-0 opacity-[0.4] dark:opacity-[0.06] pointer-events-none" 
+          style={{ 
+            backgroundImage: "url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png')", 
+            backgroundRepeat: 'repeat',
+            backgroundSize: '400px'
+          }} 
+        />
         
         {activeProject ? (
           <>
             {/* Header info bar */}
-            <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-3.5 flex items-center justify-between z-10 shadow-sm shrink-0 transition-colors duration-200">
+            <div className="chat-header-bar border-b border-slate-200 dark:border-slate-800/80 px-6 py-3.5 flex items-center justify-between z-10 shadow-sm shrink-0 transition-colors duration-200">
               <div className="flex items-center gap-3">
                 {profilePics[activeProject.whatsapp_group_id] && profilePics[activeProject.whatsapp_group_id] !== 'no_pic' ? (
                   <img 
@@ -1558,7 +1268,7 @@ export default function ChatPage() {
                   </div>
                   <p className="text-[10px] text-slate-400 font-semibold truncate max-w-[240px]">
                     {typingStatus[activeProject.whatsapp_group_id] ? (
-                      <span className="text-emerald-600 font-bold animate-pulse">typing...</span>
+                      <span className="text-emerald-600 dark:text-emerald-400 font-bold animate-pulse">typing...</span>
                     ) : activeProject.whatsapp_group_id.endsWith('@g.us') ? (
                       groupMembers.length > 0 ? (
                         groupMembers.map(m => m.savedName || m.displayName || `+${m.phone}`).slice(0, 5).join(", ") + (groupMembers.length > 5 ? ` and ${groupMembers.length - 5} others` : "")
@@ -1567,7 +1277,7 @@ export default function ChatPage() {
                       )
                     ) : (
                       onlineStatus[activeProject.whatsapp_group_id]?.isOnline ? (
-                        <span className="text-emerald-600 font-semibold">online</span>
+                        <span className="text-emerald-600 dark:text-emerald-400 font-semibold">online</span>
                       ) : (
                         `+${activeProject.whatsapp_group_id.split('@')[0]}`
                       )
@@ -1618,8 +1328,8 @@ export default function ChatPage() {
             {/* Replying Quote Preview bar */}
             {replyingTo && (
               <div className="bg-[#f0f2f5] border-t border-slate-200 px-6 py-2 flex items-center justify-between z-10 shrink-0 animate-in slide-in-from-bottom duration-200">
-                <div className="bg-white border-l-4 border-emerald-500 rounded p-1.5 flex-1 mr-4 text-[10px] text-slate-600 font-medium select-none">
-                  <p className="font-bold text-emerald-700 text-[9px]">{replyingTo.senderName}</p>
+                <div className="bg-white border-l-4 border-indigo-500 rounded p-1.5 flex-1 mr-4 text-[10px] text-slate-600 font-medium select-none">
+                  <p className="font-bold text-indigo-700 text-[9px]">{replyingTo.senderName}</p>
                   <p className="truncate">{replyingTo.body}</p>
                 </div>
                 <button 
@@ -1632,15 +1342,8 @@ export default function ChatPage() {
             )}
 
             {/* Chat Bubble log */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-4 z-10">
+            <div className="flex-1 overflow-y-auto p-6 space-y-4 z-10 flex flex-col">
               
-              {/* Centered Date header */}
-              <div className="flex justify-center my-2">
-                <span className="bg-white/90 shadow-sm border border-slate-200/50 text-slate-400 text-[10px] font-bold px-3 py-1 rounded-full">
-                  March 27, 2026
-                </span>
-              </div>
-
               {(() => {
                 const filtered = messages.filter(msg => 
                   msg.body.toLowerCase().includes(chatSearchQuery.toLowerCase())
@@ -1648,11 +1351,30 @@ export default function ChatPage() {
                 
                 if (filtered.length === 0) {
                   return (
-                    <div className="h-full flex flex-col items-center justify-center text-slate-400 p-8 text-center bg-white/40 backdrop-blur-sm rounded-3xl m-4">
-                      <MessageSquare className="w-10 h-10 text-slate-400 mb-2" />
-                      <p className="font-bold text-slate-700 text-xs">
+                    <div className="flex-1 flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 p-8 text-center bg-white/40 dark:bg-[#202c33]/40 border border-slate-200/50 dark:border-slate-850 backdrop-blur-sm rounded-3xl m-4">
+                      <MessageSquare className="w-10 h-10 text-slate-400 dark:text-slate-500 mb-2" />
+                      <p className="font-bold text-slate-700 dark:text-slate-350 text-xs">
                         {chatSearchQuery ? "No matching messages found" : "No message history loaded"}
                       </p>
+                      {!chatSearchQuery && (
+                        <button 
+                          onClick={() => {
+                            if (socket && connected && activeProject) {
+                              toast.loading("Fetching messages...");
+                              socket.emit("get_chat_messages", { chatId: activeProject.whatsapp_group_id });
+                              if (activeProject.whatsapp_group_id.endsWith('@g.us')) {
+                                socket.emit("get_group_participants", { chatId: activeProject.whatsapp_group_id });
+                              }
+                            } else {
+                              toast.error("Not connected to server. Please try again.");
+                            }
+                          }}
+                          className="mt-4 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          Reload Chat
+                        </button>
+                      )}
                     </div>
                   );
                 }
@@ -1661,6 +1383,37 @@ export default function ChatPage() {
                   <AnimatePresence mode="popLayout">
                     {filtered.map((msg, index) => {
                       const isMe = msg.fromMe;
+                      
+                      // Calculate date separator
+                      const currentDate = new Date(msg.timestamp * 1000);
+                      const prevMsg = index > 0 ? filtered[index - 1] : null;
+                      const prevDate = prevMsg ? new Date(prevMsg.timestamp * 1000) : null;
+                      
+                      const showSeparator = !prevDate || 
+                        currentDate.getDate() !== prevDate.getDate() || 
+                        currentDate.getMonth() !== prevDate.getMonth() || 
+                        currentDate.getFullYear() !== prevDate.getFullYear();
+                        
+                      let separatorText = "";
+                      if (showSeparator) {
+                        const today = new Date();
+                        const yesterday = new Date();
+                        yesterday.setDate(today.getDate() - 1);
+                        
+                        if (currentDate.toDateString() === today.toDateString()) {
+                          separatorText = "Today";
+                        } else if (currentDate.toDateString() === yesterday.toDateString()) {
+                          separatorText = "Yesterday";
+                        } else {
+                          separatorText = currentDate.toLocaleDateString([], { 
+                            weekday: 'long', 
+                            month: 'short', 
+                            day: 'numeric', 
+                            year: 'numeric' 
+                          });
+                        }
+                      }
+
                       return (
                         <motion.div 
                           key={msg.id || index}
@@ -1668,8 +1421,15 @@ export default function ChatPage() {
                           animate={{ opacity: 1, y: 0 }}
                           exit={{ opacity: 0, scale: 0.95 }}
                           transition={{ type: "spring", stiffness: 200, damping: 20 }}
-                          className={`flex ${isMe ? 'justify-end' : 'justify-start'} group w-full`}
+                          className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} group w-full`}
                         >
+                          {showSeparator && (
+                            <div className="flex justify-center w-full my-3">
+                              <span className="bg-white/95 dark:bg-slate-800/95 backdrop-blur-md px-3 py-1 rounded-full text-[10px] font-black text-slate-500 dark:text-slate-400 border border-slate-200/50 dark:border-slate-700/80 shadow-sm uppercase tracking-wider select-none">
+                                {separatorText}
+                              </span>
+                            </div>
+                          )}
                           <div className={`max-w-[65%] rounded-xl px-3.5 py-2 shadow-sm relative border transition-colors ${
                         isMe 
                           ? 'bg-[#d9fdd3] dark:bg-[#005c4b] text-[#111b21] dark:text-[#e9edef] border-[#c0ebd0] dark:border-[#025143] rounded-tr-none' 
@@ -1688,15 +1448,15 @@ export default function ChatPage() {
 
                         {/* Sender Name */}
                         {!isMe && (
-                          <p className="text-[9px] font-black text-emerald-600 mb-1">
+                          <p className="text-[9px] font-black text-indigo-600 mb-1">
                             {msg.senderName}
                           </p>
                         )}
 
                         {/* Render Quoted/Replying Message Box */}
                         {msg.quotedBody && (
-                          <div className="bg-black/5 dark:bg-white/10 border-l-4 border-emerald-500 rounded p-1.5 mb-1.5 text-[10px] text-slate-600 dark:text-slate-350 font-medium select-none">
-                            <p className="font-bold text-emerald-700 dark:text-emerald-400 text-[9px]">{msg.quotedSender}</p>
+                          <div className="bg-black/5 dark:bg-white/10 border-l-4 border-indigo-500 rounded p-1.5 mb-1.5 text-[10px] text-slate-600 dark:text-slate-350 font-medium select-none">
+                            <p className="font-bold text-indigo-700 dark:text-indigo-400 text-[9px]">{msg.quotedSender}</p>
                             <p className="truncate max-w-[200px]">{msg.quotedBody}</p>
                           </div>
                         )}
@@ -1749,9 +1509,9 @@ export default function ChatPage() {
                                 className="bg-white/95 dark:bg-slate-900/90 border border-slate-200/55 dark:border-slate-800/80 p-3 rounded-xl flex items-center gap-3 text-left shadow-sm hover:bg-slate-50 dark:hover:bg-slate-850 transition-colors cursor-pointer w-full"
                               >
                                 {mediaData[msg.id]?.loading ? (
-                                  <Loader2 className="w-6 h-6 animate-spin text-emerald-500 shrink-0" />
+                                  <Loader2 className="w-6 h-6 animate-spin text-indigo-500 shrink-0" />
                                 ) : (
-                                  <Download className="w-6 h-6 text-emerald-600 dark:text-emerald-450 shrink-0" />
+                                  <Download className="w-6 h-6 text-indigo-600 dark:text-indigo-450 shrink-0" />
                                 )}
                                 <div>
                                   <p className="text-[10px] font-black text-slate-800 dark:text-slate-200">Media File</p>
@@ -1771,7 +1531,7 @@ export default function ChatPage() {
                         <div className="flex items-center justify-between mt-1.5 gap-4">
                           <button
                             onClick={() => handlePinChatMessage(msg.body)}
-                            className={`opacity-0 group-hover:opacity-100 text-[9px] font-bold flex items-center gap-0.5 cursor-pointer transition-opacity ${isMe ? 'text-emerald-700 hover:text-emerald-950' : 'text-emerald-600 hover:text-emerald-800'}`}
+                            className={`opacity-0 group-hover:opacity-100 text-[9px] font-bold flex items-center gap-0.5 cursor-pointer transition-opacity ${isMe ? 'text-indigo-700 hover:text-indigo-950' : 'text-indigo-600 hover:text-indigo-800'}`}
                             title="Pin guideline"
                           >
                             <Pin className="w-2.5 h-2.5 rotate-45" /> Pin
@@ -1840,7 +1600,7 @@ export default function ChatPage() {
                 placeholder="Type a message..." 
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
-                className="flex-1 bg-white dark:bg-[#2a3942] border border-transparent dark:border-slate-850 px-4 py-2.5 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-xs font-medium text-slate-800 dark:text-slate-200 transition-colors shadow-sm"
+                className="flex-1 bg-white dark:bg-[#2a3942] border border-transparent dark:border-slate-850 px-4 py-2.5 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs font-medium text-slate-800 dark:text-slate-200 transition-colors shadow-sm"
               />
               <div className="relative shrink-0">
                 <button 
@@ -1982,7 +1742,7 @@ export default function ChatPage() {
               <button 
                 type="submit"
                 disabled={!inputText.trim()}
-                className="bg-[#00a884] hover:bg-[#008f70] disabled:bg-slate-200 text-white p-2.5 rounded-xl shadow-md disabled:shadow-none hover:-translate-y-0.5 transition-all cursor-pointer shrink-0"
+                className="bg-[#3b9f78] hover:bg-[#328665] disabled:bg-slate-200 text-white p-2.5 rounded-xl shadow-md disabled:shadow-none hover:-translate-y-0.5 transition-all cursor-pointer shrink-0"
               >
                 <Send className="w-4 h-4" />
               </button>
@@ -2228,7 +1988,7 @@ export default function ChatPage() {
                           toast.success("Note added!");
                         }
                       }}
-                      className="bg-emerald-600 disabled:opacity-50 text-white px-2 py-1 rounded-md text-[10px] font-bold hover:bg-emerald-700 transition shrink-0 cursor-pointer"
+                      className="bg-indigo-600 disabled:opacity-50 text-white px-2 py-1 rounded-md text-[10px] font-bold hover:bg-indigo-700 transition shrink-0 cursor-pointer"
                     >
                       Save
                     </button>
@@ -2302,7 +2062,7 @@ export default function ChatPage() {
                               <button 
                                 type="button"
                                 onClick={() => startDirectChat(p)}
-                                className="bg-emerald-500 hover:bg-emerald-600 text-white p-1 rounded-md transition shadow-sm cursor-pointer"
+                                className="bg-indigo-500 hover:bg-indigo-600 text-white p-1 rounded-md transition shadow-sm cursor-pointer"
                                 title="Send private message"
                               >
                                 <MessageSquare className="w-3 h-3" />
@@ -2368,7 +2128,7 @@ export default function ChatPage() {
                                   link.click();
                                   document.body.removeChild(link);
                                 }}
-                                className="text-emerald-600 hover:text-emerald-700 p-1 bg-white hover:bg-slate-100 border border-slate-100 rounded shadow-sm transition cursor-pointer"
+                                className="text-indigo-600 hover:text-indigo-700 p-1 bg-white hover:bg-slate-100 border border-slate-100 rounded shadow-sm transition cursor-pointer"
                                 title="Download"
                               >
                                 <FileDown className="w-3.5 h-3.5" />
@@ -2433,6 +2193,198 @@ export default function ChatPage() {
 
         </div>
       )}
+
+      {/* NEW CHAT MODAL */}
+      <AnimatePresence>
+        {newChatModalOpen && (
+          <>
+            {/* Backdrop */}
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => {
+                setNewChatModalOpen(false);
+                setNewChatPhone("");
+                setNewChatName("");
+              }}
+              className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 cursor-pointer"
+            />
+            {/* Modal Dialog */}
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 280 }}
+              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-md bg-white dark:bg-[#222e35] border border-slate-200 dark:border-slate-800/80 rounded-2xl shadow-2xl z-[60] flex flex-col overflow-hidden font-sans text-slate-805 dark:text-slate-200"
+            >
+              {/* Header */}
+              <div className="p-5 border-b border-slate-100 dark:border-slate-800/80 flex items-center justify-between bg-slate-50 dark:bg-[#111b21] shrink-0">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 bg-[#e6f7f4] dark:bg-[#00a884]/15 rounded-xl text-[#00a884] dark:text-[#00e676]">
+                    <MessageSquare className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-sm tracking-tight text-slate-800 dark:text-slate-100">Start New Chat</h3>
+                    <p className="text-[10px] text-slate-400 dark:text-slate-500 font-medium">Create a direct WhatsApp conversation</p>
+                  </div>
+                </div>
+                <button 
+                  type="button"
+                  onClick={() => {
+                    setNewChatModalOpen(false);
+                    setNewChatPhone("");
+                    setNewChatName("");
+                  }}
+                  className="p-1.5 hover:bg-slate-150 dark:hover:bg-slate-850 rounded-full text-slate-400 hover:text-slate-650 dark:hover:text-slate-200 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Form Content */}
+              <form 
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  
+                  // Clean phone number
+                  const cleanedPhone = newChatPhone.replace(/\D/g, '');
+                  if (!cleanedPhone) {
+                    toast.error("Please enter a valid phone number");
+                    return;
+                  }
+                  
+                  const targetJid = `${cleanedPhone}@c.us`;
+                  
+                  // Check if project already exists
+                  const existing = projects.find(p => p.whatsapp_group_id === targetJid);
+                  if (existing) {
+                    setActiveProject(existing);
+                    setNewChatModalOpen(false);
+                    setNewChatPhone("");
+                    setNewChatName("");
+                    toast.success(`Opened existing chat: ${existing.group_name}`);
+                    return;
+                  }
+                  
+                  // Create new project
+                  const newProject: Project = {
+                    id: 'temp_' + cleanedPhone,
+                    whatsapp_group_id: targetJid,
+                    group_name: newChatName.trim() || `+${cleanedPhone}`,
+                    status: newChatStatus,
+                    event_month: 'Direct Chat',
+                    created_at: new Date().toISOString()
+                  };
+                  
+                  // Try to insert in Supabase
+                  try {
+                    const { data, error } = await supabase
+                      .from("projects")
+                      .insert([
+                        {
+                          whatsapp_group_id: targetJid,
+                          group_name: newProject.group_name,
+                          status: newProject.status,
+                          event_month: 'Direct Chat'
+                        }
+                      ])
+                      .select();
+                    
+                    if (error) throw error;
+                    
+                    if (data && data[0]) {
+                      setProjects(prev => [data[0], ...prev]);
+                      setActiveProject(data[0]);
+                      
+                      // Save cached version
+                      const updated = [data[0], ...projects];
+                      localStorage.setItem("whatsacp_cached_projects", JSON.stringify(updated));
+                    } else {
+                      throw new Error("No data returned");
+                    }
+                  } catch (err) {
+                    // Fallback to offline / state-only insertion
+                    setProjects(prev => [newProject, ...prev]);
+                    setActiveProject(newProject);
+                    
+                    const updated = [newProject, ...projects];
+                    localStorage.setItem("whatsacp_cached_projects", JSON.stringify(updated));
+                  }
+                  
+                  // Close modal
+                  setNewChatModalOpen(false);
+                  setNewChatPhone("");
+                  setNewChatName("");
+                  toast.success(`Chat started with ${newProject.group_name}!`);
+                }}
+                className="p-5 space-y-4 bg-white dark:bg-[#222e35]"
+              >
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Phone Number (with Country Code)</label>
+                  <input 
+                    type="tel"
+                    required
+                    value={newChatPhone}
+                    onChange={(e) => setNewChatPhone(e.target.value)}
+                    placeholder="e.g. 919876543210"
+                    className="w-full bg-slate-50 dark:bg-[#111b21] border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-800 dark:text-slate-200 transition-colors shadow-sm"
+                  />
+                  <p className="text-[9px] text-slate-400 dark:text-slate-500 font-medium">Exclude '+' or spaces. Include country code (e.g. 91 for India).</p>
+                </div>
+                
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Contact / Chat Name (Optional)</label>
+                  <input 
+                    type="text" 
+                    value={newChatName}
+                    onChange={(e) => setNewChatName(e.target.value)}
+                    placeholder="e.g. John Doe"
+                    className="w-full bg-slate-50 dark:bg-[#111b21] border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-800 dark:text-slate-200 transition-colors shadow-sm"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Project Stage</label>
+                  <select 
+                    value={newChatStatus}
+                    onChange={(e) => setNewChatStatus(e.target.value)}
+                    className="w-full bg-slate-50 dark:bg-[#111b21] border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-800 dark:text-slate-200 transition-colors shadow-sm cursor-pointer"
+                  >
+                    <option value="Unassigned">Unassigned</option>
+                    <option value="Pre-Prod">Pre-Prod</option>
+                    <option value="Production">Production</option>
+                    <option value="Editing">Editing</option>
+                    <option value="Revisions">Revisions</option>
+                    <option value="Completed">Completed</option>
+                  </select>
+                </div>
+
+                {/* Footer Buttons */}
+                <div className="pt-2 flex items-center justify-end gap-3">
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      setNewChatModalOpen(false);
+                      setNewChatPhone("");
+                      setNewChatName("");
+                    }}
+                    className="px-4 py-2 border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-850 rounded-xl text-xs font-bold text-slate-500 dark:text-slate-400 transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    type="submit"
+                    className="px-5 py-2.5 bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white rounded-xl text-xs font-bold shadow-md shadow-indigo-500/10 transition hover:-translate-y-0.5 active:translate-y-0 cursor-pointer"
+                  >
+                    Create & Open Chat
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
 
     </div>
   );
