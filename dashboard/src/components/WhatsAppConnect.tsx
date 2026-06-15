@@ -12,7 +12,7 @@ export default function WhatsAppConnect() {
 
   useEffect(() => {
     const savedUrl = typeof window !== 'undefined' ? localStorage.getItem('whatsacp_backend_url') : null;
-    const socketUrl = savedUrl || `http://${window.location.hostname}:3001`;
+    const socketUrl = savedUrl || "http://localhost:3001";
     const myClientId = typeof window !== 'undefined' ? (localStorage.getItem('whatsacp_client_id') || 'default') : 'default';
     const socket = io(socketUrl, { 
       query: { clientId: myClientId },
