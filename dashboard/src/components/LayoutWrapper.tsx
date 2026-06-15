@@ -45,6 +45,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
   const [editEmail, setEditEmail] = useState("");
   const [editRole, setEditRole] = useState("");
   const [backendUrl, setBackendUrl] = useState("http://localhost:3001");
+  const [clientId, setClientId] = useState("default");
   const [whatsappStatus, setWhatsappStatus] = useState<'connected' | 'disconnected' | 'checking'>('checking');
   const [testingConnection, setTestingConnection] = useState(false);
 
@@ -98,6 +99,8 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
 
     const savedUrl = localStorage.getItem('whatsacp_backend_url') || "http://localhost:3001";
     setBackendUrl(savedUrl);
+    const savedClientId = localStorage.getItem('whatsacp_client_id') || "default";
+    setClientId(savedClientId);
   }, []);
 
   // Fetch WhatsApp Web service status from backend
@@ -161,6 +164,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
 
     // Save Backend URL
     localStorage.setItem('whatsacp_backend_url', backendUrl);
+    localStorage.setItem('whatsacp_client_id', clientId.trim() || 'default');
 
     toast.success("Settings saved successfully!");
     setSettingsOpen(false);
@@ -600,6 +604,18 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
                         className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 shadow-sm"
                         placeholder="http://localhost:3001"
                       />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">WhatsApp Session ID (Client ID)</label>
+                      <input 
+                        type="text" 
+                        value={clientId}
+                        onChange={(e) => setClientId(e.target.value)}
+                        className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 shadow-sm"
+                        placeholder="e.g. user_session_1"
+                      />
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500">Allows multiple team members to connect different WhatsApp numbers on the same server.</p>
                     </div>
 
                     <div className="flex items-center justify-between pt-1">

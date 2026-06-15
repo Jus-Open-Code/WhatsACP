@@ -11,10 +11,13 @@ export default function WhatsAppConnect() {
   const socketRef = useRef<any>(null);
 
   useEffect(() => {
-    // Use window.location.hostname to avoid localhost vs 127.0.0.1 issues
     const savedUrl = typeof window !== 'undefined' ? localStorage.getItem('whatsacp_backend_url') : null;
     const socketUrl = savedUrl || `http://${window.location.hostname}:3001`;
-    const socket = io(socketUrl, { transports: ['websocket', 'polling'] });
+    const myClientId = typeof window !== 'undefined' ? (localStorage.getItem('whatsacp_client_id') || 'default') : 'default';
+    const socket = io(socketUrl, { 
+      query: { clientId: myClientId },
+      transports: ['websocket', 'polling'] 
+    });
     socketRef.current = socket;
 
     socket.on('connect', () => {
