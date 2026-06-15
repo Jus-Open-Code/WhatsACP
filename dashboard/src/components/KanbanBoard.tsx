@@ -152,7 +152,11 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
     setIsBrowser(true);
     
     if (isOffline) {
-      const savedUrl = typeof window !== 'undefined' ? localStorage.getItem('whatsacp_backend_url') : null;
+      let savedUrl = typeof window !== 'undefined' ? localStorage.getItem('whatsacp_backend_url') : null;
+      if (savedUrl && savedUrl.includes("vercel.app")) {
+        localStorage.removeItem('whatsacp_backend_url');
+        savedUrl = null;
+      }
       const socketUrl = savedUrl || "http://localhost:3001";
       const myClientId = typeof window !== 'undefined' ? (localStorage.getItem('whatsacp_client_id') || 'default') : 'default';
       const socketClient = io(socketUrl, { 

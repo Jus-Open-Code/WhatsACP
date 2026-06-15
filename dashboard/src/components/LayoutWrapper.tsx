@@ -97,7 +97,11 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
       setEditRole("Administrator");
     }
 
-    const savedUrl = localStorage.getItem('whatsacp_backend_url') || "http://localhost:3001";
+    let savedUrl = localStorage.getItem('whatsacp_backend_url') || "http://localhost:3001";
+    if (savedUrl.includes("vercel.app")) {
+      localStorage.removeItem('whatsacp_backend_url');
+      savedUrl = "http://localhost:3001";
+    }
     setBackendUrl(savedUrl);
     const savedClientId = localStorage.getItem('whatsacp_client_id') || "default";
     setClientId(savedClientId);
