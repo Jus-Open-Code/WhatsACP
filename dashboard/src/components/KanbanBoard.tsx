@@ -159,7 +159,7 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
           savedUrl = null;
         }
       }
-      const socketUrl = savedUrl || "https://547cb4cb9f47fb.lhr.life";
+      const socketUrl = savedUrl || "https://e985ffd850ccd7.lhr.life";
       const myClientId = typeof window !== 'undefined' ? (localStorage.getItem('whatsacp_client_id') || 'default') : 'default';
       const socketClient = io(socketUrl, { 
         query: { clientId: myClientId },
