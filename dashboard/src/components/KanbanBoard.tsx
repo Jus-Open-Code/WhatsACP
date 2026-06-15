@@ -152,7 +152,8 @@ export default function KanbanBoard({ initialProjects }: { initialProjects: Proj
     setIsBrowser(true);
     
     if (isOffline) {
-      const socketUrl = `http://${window.location.hostname}:3001`;
+      const savedUrl = typeof window !== 'undefined' ? localStorage.getItem('whatsacp_backend_url') : null;
+      const socketUrl = savedUrl || `http://${window.location.hostname}:3001`;
       const socketClient = io(socketUrl, { transports: ['websocket', 'polling'] });
       setSocket(socketClient);
 
