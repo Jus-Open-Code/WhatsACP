@@ -46,19 +46,25 @@ function getOrInitializeClient(clientId, io) {
     clientActiveGroups.set(clientId, []);
     clientProfilePicCaches.set(clientId, {});
 
+    const isWindows = process.platform === 'win32';
+    const puppeteerOptions = {
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+        protocolTimeout: 300000
+    };
+
+    if (isWindows) {
+        puppeteerOptions.executablePath = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
+        puppeteerOptions.userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
+    }
+
     const client = new Client({
         authStrategy: new LocalAuth({ clientId: clientId }),
         webVersionCache: {
             type: 'remote',
             remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html'
         },
-        puppeteer: {
-            headless: true,
-            executablePath: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-            args: ['--no-sandbox', '--disable-setuid-sandbox'],
-            protocolTimeout: 300000
-        }
+        puppeteer: puppeteerOptions
     });
 
     clients.set(clientId, client);
