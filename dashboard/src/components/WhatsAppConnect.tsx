@@ -12,11 +12,13 @@ export default function WhatsAppConnect() {
 
   useEffect(() => {
     let savedUrl = typeof window !== 'undefined' ? localStorage.getItem('whatsacp_backend_url') : null;
-    if (savedUrl && savedUrl.includes("vercel.app")) {
-      localStorage.removeItem('whatsacp_backend_url');
-      savedUrl = null;
+    if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      if (savedUrl && (savedUrl.includes("localhost") || savedUrl.includes("127.0.0.1") || savedUrl.includes("vercel.app"))) {
+        localStorage.removeItem('whatsacp_backend_url');
+        savedUrl = null;
+      }
     }
-    const socketUrl = savedUrl || "http://localhost:3001";
+    const socketUrl = savedUrl || "https://547cb4cb9f47fb.lhr.life";
     const myClientId = typeof window !== 'undefined' ? (localStorage.getItem('whatsacp_client_id') || 'default') : 'default';
     const socket = io(socketUrl, { 
       query: { clientId: myClientId },

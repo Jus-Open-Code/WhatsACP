@@ -44,7 +44,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
   const [editName, setEditName] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [editRole, setEditRole] = useState("");
-  const [backendUrl, setBackendUrl] = useState("http://localhost:3001");
+  const [backendUrl, setBackendUrl] = useState("https://547cb4cb9f47fb.lhr.life");
   const [clientId, setClientId] = useState("default");
   const [whatsappStatus, setWhatsappStatus] = useState<'connected' | 'disconnected' | 'checking'>('checking');
   const [testingConnection, setTestingConnection] = useState(false);
@@ -97,10 +97,12 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
       setEditRole("Administrator");
     }
 
-    let savedUrl = localStorage.getItem('whatsacp_backend_url') || "http://localhost:3001";
-    if (savedUrl.includes("vercel.app")) {
-      localStorage.removeItem('whatsacp_backend_url');
-      savedUrl = "http://localhost:3001";
+    let savedUrl = localStorage.getItem('whatsacp_backend_url') || "https://547cb4cb9f47fb.lhr.life";
+    if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      if (savedUrl.includes("localhost") || savedUrl.includes("127.0.0.1") || savedUrl.includes("vercel.app")) {
+        localStorage.removeItem('whatsacp_backend_url');
+        savedUrl = "https://547cb4cb9f47fb.lhr.life";
+      }
     }
     setBackendUrl(savedUrl);
     const savedClientId = localStorage.getItem('whatsacp_client_id') || "default";
