@@ -18,7 +18,7 @@ export default function WhatsAppConnect() {
         savedUrl = null;
       }
     }
-    const socketUrl = savedUrl || "https://e985ffd850ccd7.lhr.life";
+    const socketUrl = savedUrl || "https://whatsacpakash.loca.lt";
     const myClientId = typeof window !== 'undefined' ? (localStorage.getItem('whatsacp_client_id') || 'default') : 'default';
     const socket = io(socketUrl, { 
       query: { clientId: myClientId },
